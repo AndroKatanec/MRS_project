@@ -12,6 +12,7 @@ import numpy as np
 from typing import List
 
 
+
 def quaternion_to_euler(w, x, y, z):
     ysqr = y * y
     t0 = +2.0 * (w * x + y * z)
@@ -32,7 +33,7 @@ class Simulation():
     def __init__(self) -> None:
         self.avoiding_distance_to_the_wall = 4
         self.radius = 1.5 #radius of DoV of a boid
-        self.fov = 2 #+- field of view of a boid in radians
+        self.fov = 3 #+- field of view of a boid in radians
         self.num_of_robots = rospy.get_param("/num_of_robots")
         self.initialization = [False for i in range(self.num_of_robots)]
         #set initial velocity
@@ -43,7 +44,7 @@ class Simulation():
         self.pub = [rospy.Publisher(f'/robot_{i}/cmd_vel', Twist, queue_size=2) for i in range(self.num_of_robots)]
         sleep(1)
         self.sub = [rospy.Subscriber("/robot_{}/odom".format(i), Odometry, self.callback) for i in range(self.num_of_robots)]
-        
+
 
     def callback(self, msg) -> None:
         robot_id = int(list(msg._connection_header['topic'])[7])  #get the id of the boid that this message came from
@@ -55,14 +56,22 @@ class Simulation():
             move = self.avoid_the_wall(odom_i, robot_id)
 
         elif len(neoighbors_id)>0: #check if there is nearby boids to apply Reynolds rules
-            move.linear.x = min(odom_i.twist.twist.linear.x+0.1, 1)
+            #move.linear.x = min(odom_i.twist.twist.linear.x+0.1, 1)
             cohesion_vec = self.cohesion(robot_id, neoighbors_id)
             separation_vec = self.separation(robot_id, neoighbors_id)
-            move.angular.z = min(self.last_positions[robot_id].twist.twist.angular.z + cohesion_vec*0.08 + separation_vec*0.08, 5)
+            #move.angular.z = min(self.last_positions[robot_id].twist.twist.angular.z + separation_vec*0.04, 5)
+            brzina = self.alignment(robot_id, neoighbors_id)
+            move.linear.x = brzina[0] + cohesion_vec[0] + separation_vec[0]
+            move.linear.y = brzina[1] + cohesion_vec[1] + separation_vec[1]
+
+            if brzina[0]<0.03:
+                move.linear.x = move.linear.x + move.linear.x + move.linear.x + move.linear.x + move.linear.x
+                move.linear.y = move.linear.y + move.linear.y + move.linear.y + move.linear.y + move.linear.y
+
 
         else: #if there is no nearby boids to be affected by just go straight
-            move.linear.x = min(odom_i.twist.twist.linear.x+0.1, 1) 
-            #move.angular.z = max(self.last_positions[robot_id].twist.twist.angular.z-0.5, 0)
+            move.linear.x = min(odom_i.twist.twist.linear.x+0.08, 0.3) 
+            #move.angular.z = max(self.last_positions[robot_id].twist.twist.angular.z-0.2, 0)
             move.angular.z = 0
         self.pub[robot_id].publish(move)
 
@@ -110,7 +119,7 @@ class Simulation():
         else:
             move.angular.z=0
         
-        move.linear.x= max(odometry.twist.twist.linear.x-0.1, 0.5)     
+        move.linear.x= max(odometry.twist.twist.linear.x-0.1, 0.2)     
         return move
 
     def get_neighbours_ids(self, current_robot_id, positions_of_all_boids) -> List[int]:
@@ -133,35 +142,68 @@ class Simulation():
 
     def cohesion(self, robot_id, neighbours):
         curent_rob_position = self.last_positions[robot_id].pose.pose.position
-        x_sum = curent_rob_position.x
-        y_sum = curent_rob_position.y
+        x_poz_poc = curent_rob_position.x
+        y_poz_poc = curent_rob_position.y
+        x_poz=0
+        y_poz=0
         for i in neighbours:
-            x_sum+=self.last_positions[i].pose.pose.position.x
-            y_sum+=self.last_positions[i].pose.pose.position.y
+            x_poz+=self.last_positions[i].pose.pose.position.x - x_poz_poc
+            y_poz+=self.last_positions[i].pose.pose.position.y - y_poz_poc
 
-        x_center = x_sum/(1+len(neighbours))
-        y_center = y_sum/(1+len(neighbours))
-        angle = np.arctan2(y_center - curent_rob_position.y, x_center - curent_rob_position.x)
+        x_poz_k=0.1/(len(neighbours))*x_poz
+        y_poz_k=0.1/(len(neighbours))*y_poz
 
-        return angle
+        poz=[x_poz_k, y_poz_k]
+        #x_center = x_sum/(1+len(neighbours))
+        #y_center = y_sum/(1+len(neighbours))
+        #angle = np.arctan2(y_center - curent_rob_position.y, x_center - curent_rob_position.x)
+
+        return poz
 
     def separation(self, robot_id, neighbours):
         curent_rob_position = self.last_positions[robot_id].pose.pose.position
-        distances = []
-        vectors = []
+        x_poz_poc_s = curent_rob_position.x
+        y_poz_poc_s = curent_rob_position.y
+        x_poz_s=0
+        y_poz_s=0
         for i in neighbours:
-            vector_i = (self.last_positions[robot_id].pose.pose.position.x - self.last_positions[i].pose.pose.position.x, self.last_positions[robot_id].pose.pose.position.y - self.last_positions[i].pose.pose.position.y)
-            vectors.append(vector_i)
-            distance_i = linalg.norm([self.last_positions[i].pose.pose.position.x - self.last_positions[robot_id].pose.pose.position.x, self.last_positions[i].pose.pose.position.y - self.last_positions[robot_id].pose.pose.position.y])
-            distances.append(distance_i)
-        force_vector = [0,0]
-        for i in range(len(neighbours)):
-            force_vector[0]+=(np.sum(distances)/distances[i])*vectors[i][0]
-            force_vector[1]+=(np.sum(distances)/distances[i])*vectors[i][1]
-        angle = np.arctan2(force_vector[1], force_vector[0])
-        return angle
+            if((self.last_positions[i].pose.pose.position.x - x_poz_poc_s)!=0):
+                x_poz_s+=(self.last_positions[i].pose.pose.position.x - x_poz_poc_s)/abs((self.last_positions[i].pose.pose.position.x - x_poz_poc_s)*(self.last_positions[i].pose.pose.position.x - x_poz_poc_s))
+            elif((self.last_positions[i].pose.pose.position.y - y_poz_poc_s)!=0):
+                y_poz_s+=(self.last_positions[i].pose.pose.position.y - y_poz_poc_s)/abs((self.last_positions[i].pose.pose.position.y - y_poz_poc_s)*(self.last_positions[i].pose.pose.position.y - y_poz_poc_s))
+        
+        x_poz_s_k=-0.08/(len(neighbours))*x_poz_s
+        y_poz_s_k=-0.08/(len(neighbours))*y_poz_s
+        poz_s=[x_poz_s_k, y_poz_s_k]
+        #distances = []
+        #vectors = []
+        #for i in neighbours:
+            #vector_i = (self.last_positions[robot_id].pose.pose.position.x - self.last_positions[i].pose.pose.position.x, self.last_positions[robot_id].pose.pose.position.y - self.last_positions[i].pose.pose.position.y)
+            #vectors.append(vector_i)
+            #distance_i = linalg.norm([self.last_positions[i].pose.pose.position.x - self.last_positions[robot_id].pose.pose.position.x, self.last_positions[i].pose.pose.position.y - self.last_positions[robot_id].pose.pose.position.y])
+            #distances.append(distance_i)
+        #force_vector = [0,0]
+        #for i in range(len(neighbours)):
+            #force_vector[0]+=(np.sum(distances)/distances[i])*vectors[i][0]
+            #force_vector[1]+=(np.sum(distances)/distances[i])*vectors[i][1]
+        #angle = np.arctan2(force_vector[1], force_vector[0])
+        return poz_s
 
     def alignment(self, robot_id, neighbours):
+        x_vel_poc=self.last_positions[robot_id].twist.twist.linear.x
+        y_vel_poc=self.last_positions[robot_id].twist.twist.linear.y
+        x_vel=0
+        y_vel=0
+        for i in neighbours:
+            x_vel+=self.last_positions[i].twist.twist.linear.x - x_vel_poc
+            y_vel+=self.last_positions[i].twist.twist.linear.y - y_vel_poc
+
+        x_vel_k=0.08/(len(neighbours))*x_vel
+        y_vel_k=0.08/(len(neighbours))*x_vel
+
+        vel=[x_vel_k, y_vel_k]
+
+        return vel
         pass
 
 if __name__ == '__main__':
