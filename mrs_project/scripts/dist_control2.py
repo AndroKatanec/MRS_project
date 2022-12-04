@@ -199,7 +199,7 @@ class Simulation():
             y_vel+=self.last_positions[i].twist.twist.linear.y - y_vel_poc
 
         x_vel_k=0.08/(len(neighbours))*x_vel
-        y_vel_k=0.08/(len(neighbours))*x_vel
+        y_vel_k=0.08/(len(neighbours))*y_vel
 
         vel=[x_vel_k, y_vel_k]
 
