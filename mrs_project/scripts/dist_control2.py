@@ -37,7 +37,7 @@ class Simulation():
         self.map_resolution = 0
         self.map_origin = Pose()
 
-        self.radius = 1.5  # radius of DoV of a boid
+        self.radius = 2  # radius of DoV of a boid
         self.avoiding_distance_to_the_wall = 3
         self.fov = 3  # +- field of view of a boid in radians
         self.num_of_robots = rospy.get_param("/num_of_robots")
@@ -212,9 +212,8 @@ class Simulation():
             x_poz += self.last_positions[i].pose.pose.position.x - x_poz_poc
             y_poz += self.last_positions[i].pose.pose.position.y - y_poz_poc
 
-        x_poz_k = 0.1/(len(neighbours))*x_poz
-        y_poz_k = 0.1/(len(neighbours))*y_poz
-
+        x_poz_k = 0.5/(len(neighbours))*x_poz
+        y_poz_k = 0.5/(len(neighbours))*y_poz
         poz = [x_poz_k, y_poz_k]
 
         return poz
@@ -229,7 +228,7 @@ class Simulation():
             if((self.last_positions[i].pose.pose.position.x - x_poz_poc_s) != 0):
                 x_poz_s += (self.last_positions[i].pose.pose.position.x - x_poz_poc_s)/abs(
                     (self.last_positions[i].pose.pose.position.x - x_poz_poc_s)*(self.last_positions[i].pose.pose.position.x - x_poz_poc_s))
-            elif((self.last_positions[i].pose.pose.position.y - y_poz_poc_s) != 0):
+            if ((self.last_positions[i].pose.pose.position.y - y_poz_poc_s) != 0):
                 y_poz_s += (self.last_positions[i].pose.pose.position.y - y_poz_poc_s)/abs(
                     (self.last_positions[i].pose.pose.position.y - y_poz_poc_s)*(self.last_positions[i].pose.pose.position.y - y_poz_poc_s))
 
@@ -237,6 +236,7 @@ class Simulation():
         y_poz_s_k = -0.08/(len(neighbours))*y_poz_s
         poz_s = [x_poz_s_k, y_poz_s_k]
 
+        print(robot_id, poz_s[0], 1000000*poz_s[1])
         return poz_s
 
     def alignment(self, robot_id, neighbours):
@@ -254,7 +254,6 @@ class Simulation():
         vel = [x_vel_k, y_vel_k]
 
         return vel
-        pass
 
 
 if __name__ == '__main__':
