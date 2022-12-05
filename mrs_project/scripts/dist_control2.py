@@ -3,6 +3,7 @@
 
 import rospy
 import tf2_ros
+import random
 from geometry_msgs.msg import Twist, Pose
 from nav_msgs.msg import Odometry, OccupancyGrid
 import message_filters
@@ -11,6 +12,7 @@ from numpy import linalg
 import numpy as np
 from typing import List
 from math import atan
+
 
 def quaternion_to_euler(w, x, y, z):
     ysqr = y * y
@@ -34,9 +36,9 @@ class Simulation():
         self.map = []
         self.map_resolution = 0
         self.map_origin = Pose()
-        
-        self.radius = 1  # radius of DoV of a boid
-        self.avoiding_distance_to_the_wall = 0
+
+        self.radius = 1.5  # radius of DoV of a boid
+        self.avoiding_distance_to_the_wall = 3
         self.fov = 3  # +- field of view of a boid in radians
         self.num_of_robots = rospy.get_param("/num_of_robots")
         self.initialization = [False for i in range(self.num_of_robots)]
@@ -53,17 +55,15 @@ class Simulation():
         self.map_sub = rospy.Subscriber(
             '/map', OccupancyGrid, self.map_callback, queue_size=1)
 
-
     def map_callback(self, msg) -> None:
         self.map = []
         self.map_resolution = msg.info.resolution
         self.map_origin = msg.info.origin.position
-        self.avoiding_distance_to_the_wall = int(self.radius/self.map_resolution)
+        # int(self.radius/self.map_resolution)
         height = msg.info.height
         width = msg.info.width
-        for i in range(height - 1, -1, -1): ## Backwards iteration
-            self.map.append(msg.data[i * width : (i + 1) * width])
-
+        for i in range(height - 1, -1, -1):  # Backwards iteration
+            self.map.append(msg.data[i * width: (i + 1) * width])
 
     def callback(self, msg) -> None:
         # get the id of the boid that this message came from
@@ -72,113 +72,115 @@ class Simulation():
         neoighbors_id = self.get_neighbours_ids(robot_id, self.last_positions)
         odom_i = self.last_positions[robot_id]
         move = Twist()
+        flag_zid = 0
+        k_cohesion = 3
+        k_separation = 3
+        k_alignment = 3
+        x_brz = 0
+        y_brz = 0
         # check if the boid is near the wall
-        if self.wall_check(msg.pose.pose.position, msg.pose.pose.orientation):
-            move = self.avoid_the_wall(odom_i, robot_id)
+        if self.wall_check(msg.pose.pose.position, msg.pose.pose.orientation, 0):
+            #move = self.avoid_the_wall(odom_i, robot_id)
+            flag_zid = 1
+            print('zid')
+            pozicija_zida = self.wall_check(
+                msg.pose.pose.position, msg.pose.pose.orientation, 1)
+            delta_x = (pozicija_zida[0] - msg.pose.pose.position.x)/(abs(pozicija_zida[0] -
+                                                                         msg.pose.pose.position.x)*abs(pozicija_zida[0] - msg.pose.pose.position.x))
+            delta_y = (pozicija_zida[1] - msg.pose.pose.position.y)/(abs(pozicija_zida[1] -
+                                                                         msg.pose.pose.position.y)*abs(pozicija_zida[1] - msg.pose.pose.position.y))
+
+            move.linear.x = max(min(-delta_x*0.1, 0.3), -0.3)
+            move.linear.y = max(min(-delta_y*0.1, 0.3), -0.3)
+            x_brz = move.linear.x
+            y_brz = move.linear.y
+            #move.angular.z = move.angular.z + pozicija_zida[2]
+            print('BRZINA X:', move.linear.x)
+            print('BRZINA Y:', move.linear.y)
 
         elif len(neoighbors_id) > 0:  # check if there is nearby boids to apply Reynolds rules
-            #move.linear.x = min(odom_i.twist.twist.linear.x+0.1, 1)
             cohesion_vec = self.cohesion(robot_id, neoighbors_id)
             separation_vec = self.separation(robot_id, neoighbors_id)
-            #move.angular.z = min(self.last_positions[robot_id].twist.twist.angular.z + separation_vec*0.04, 5)
-            brzina = self.alignment(robot_id, neoighbors_id)
-            move.linear.x = brzina[0] + cohesion_vec[0] + separation_vec[0]
-            move.linear.y = brzina[1] + cohesion_vec[1] + separation_vec[1]
-
-            if brzina[0] < 0.03:
-                move.linear.x = move.linear.x + move.linear.x + \
-                    move.linear.x + move.linear.x + move.linear.x
-                move.linear.y = move.linear.y + move.linear.y + \
-                    move.linear.y + move.linear.y + move.linear.y
+            alignment_vec = self.alignment(robot_id, neoighbors_id)
+            move.linear.x = k_alignment * \
+                alignment_vec[0] + k_cohesion*cohesion_vec[0] + \
+                k_separation*separation_vec[0]
+            move.linear.y = k_alignment * \
+                alignment_vec[1] + k_cohesion*cohesion_vec[1] + \
+                k_separation*separation_vec[1]
 
         else:  # if there is no nearby boids to be affected by just go straight
-            move.linear.x = min(odom_i.twist.twist.linear.x+0.08, 0.3)
-            #move.angular.z = max(self.last_positions[robot_id].twist.twist.angular.z-0.2, 0)
-            move.angular.z = 0
+            odom = Odometry()
+            move.linear.x = max(
+                min(self.last_positions[robot_id].twist.twist.linear.x, 1), -1)
+            move.linear.y = max(
+                min(self.last_positions[robot_id].twist.twist.linear.y, 1), -1)
+            print('X BRZINA:', move.linear.x)
+            print('Y BRZINA:', move.linear.y)
+
         self.pub[robot_id].publish(move)
 
-    def wall_check(self, pose, orient) -> bool:
+    def wall_check(self, pose, orient, flag):
         "Returns True if the boid is close to the wall"
         _, _, z = quaternion_to_euler(orient.w, orient.x, orient.y, orient.z)
 
         agent_column = int((pose.x - self.map_origin.x) / self.map_resolution)
         agent_row = int((self.map_origin.y + len(self.map) *
-               self.map_resolution - pose.y) / self.map_resolution)
+                         self.map_resolution - pose.y) / self.map_resolution)
 
         rows = len(self.map)
         columns = len(self.map[0])
 
-        column_neighbourhood = range(max(0, agent_column - self.avoiding_distance_to_the_wall), min(columns, agent_column + self.avoiding_distance_to_the_wall + 1))
-        row_neighbourhood = range(max(0, agent_row - self.avoiding_distance_to_the_wall), min(rows, agent_row + self.avoiding_distance_to_the_wall + 1))
+        column_neighbourhood = range(max(0, agent_column - self.avoiding_distance_to_the_wall), min(
+            columns, agent_column + self.avoiding_distance_to_the_wall + 1))
+        row_neighbourhood = range(max(0, agent_row - self.avoiding_distance_to_the_wall),
+                                  min(rows, agent_row + self.avoiding_distance_to_the_wall + 1))
 
-        ## Checking if there is a wall in the neighbourhood
-        ## x and y are locations of the wall
-        ## can return if necessary
+        # Checking if there is a wall in the neighbourhood
+        # x and y are locations of the wall
+        # can return if necessary
         for row in row_neighbourhood:
             for column in column_neighbourhood:
-                distance = pow(row - agent_row, 2) + pow(column - agent_column, 2)
-                ## We found the wall
-                
+                distance = pow(row - agent_row, 2) + \
+                    pow(column - agent_column, 2)
+                # We found the wall
+
                 if distance <= pow(self.avoiding_distance_to_the_wall, 2) and self.map[row][column] == 100:
                     x = self.map_origin.x + column * self.map_resolution
                     y = self.map_origin.y + (rows - row) * self.map_resolution
                     alpha = np.arctan(y/x)
 
-                         
                     if alpha < z + (self.fov/2) and alpha > z - (self.fov/2):
                         print(f"Wall is at: ({x}, {y}, {alpha})")
-                        print(f"While the robot is at ({pose.x}, {pose.y}, {z})")
-                        return True
-                        ### Tu mozes vracati x, y, alpha, to su ti lokacije zida i kut izmedu
-                        ### robota i zida
+                        print(
+                            f"While the robot is at ({pose.x}, {pose.y}, {z})")
+                        if (flag):
+                            return [x, y, alpha]
+                        else:
+                            return True
+                        # Tu mozes vracati x, y, alpha, to su ti lokacije zida i kut izmedu
+                        # robota i zida
         return False
 
+    # def avoid_the_wall(self, odometry, robot_id) -> Twist():
+        #"Calculates linear and angular velocities in order to avoid hitting the wall"
 
-    def avoid_the_wall(self, odometry, robot_id) -> Twist():
-        "Calculates linear and angular velocities in order to avoid hitting the wall"
+        #move = Twist()
+        #pose = odometry.pose.pose.position
+        # print('POZICIJA:',pose.x)
+        #orient = odometry.pose.pose.orientation
+        #turning_speed_kof = 0.8
+        #_, _, z = quaternion_to_euler(orient.w, orient.x, orient.y, orient.z)
 
-        move = Twist()
-        pose = odometry.pose.pose.position
-        orient = odometry.pose.pose.orientation
-        turning_speed = 10
-        _, _, z = quaternion_to_euler(orient.w, orient.x, orient.y, orient.z)
-        # -> || pozicija
-        if pose.x > self.avoiding_distance_to_the_wall/2 and abs(z) < 3:
-            if z > 0:
-                move.angular.z = min(
-                    self.last_positions[robot_id].twist.twist.angular.z+0.1, turning_speed)
-            else:
-                move.angular.z = max(
-                    self.last_positions[robot_id].twist.twist.angular.z-0.1, -turning_speed)
+        #pozicija_zida=self.wall_check(pose.x, orient, 1)
+        #delta_x=pozicija_zida[0] - pose.x
+        #delta_y=pozicija_zida[1] - pose.y
 
-        # || <- pozicija
-        elif pose.x < -self.avoiding_distance_to_the_wall and abs(z) > 0.2:
-            if z < 0:
-                move.angular.z = min(
-                    self.last_positions[robot_id].twist.twist.angular.z+0.1, turning_speed)
-            else:
-                move.angular.z = max(
-                    self.last_positions[robot_id].twist.twist.angular.z-0.1, -turning_speed)
-
-        elif pose.y > self.avoiding_distance_to_the_wall and (z < -1.8 or z > -1.3):
-            if z > 1.57:
-                move.angular.z = min(
-                    self.last_positions[robot_id].twist.twist.angular.z+0.1, turning_speed)
-            else:
-                move.angular.z = max(
-                    self.last_positions[robot_id].twist.twist.angular.z-0.1, -turning_speed)
-        elif pose.y < -self.avoiding_distance_to_the_wall and (z < 1.3 or z > 1.7):
-            if z > -1.57:
-                move.angular.z = min(
-                    self.last_positions[robot_id].twist.twist.angular.z+0.1, turning_speed)
-            else:
-                move.angular.z = max(
-                    self.last_positions[robot_id].twist.twist.angular.z-0.1, -turning_speed)
-        else:
-            move.angular.z = 0
-
-        move.linear.x = max(odometry.twist.twist.linear.x-0.1, 0.2)
-        return move
+        #move.linear.x = -delta_x*turning_speed_kof
+        #move.linear.y = -delta_y*turning_speed_kof
+        #print('BRZINA X:',move.linear.x)
+        #print('BRZINA Y:',move.linear.y)
+        # return move
 
     def get_neighbours_ids(self, current_robot_id, positions_of_all_boids) -> List[int]:
         "Returns list of ids of boids that are in neighbourhood of a current boid"
@@ -214,9 +216,6 @@ class Simulation():
         y_poz_k = 0.1/(len(neighbours))*y_poz
 
         poz = [x_poz_k, y_poz_k]
-        #x_center = x_sum/(1+len(neighbours))
-        #y_center = y_sum/(1+len(neighbours))
-        #angle = np.arctan2(y_center - curent_rob_position.y, x_center - curent_rob_position.x)
 
         return poz
 
@@ -237,18 +236,7 @@ class Simulation():
         x_poz_s_k = -0.08/(len(neighbours))*x_poz_s
         y_poz_s_k = -0.08/(len(neighbours))*y_poz_s
         poz_s = [x_poz_s_k, y_poz_s_k]
-        #distances = []
-        #vectors = []
-        # for i in neighbours:
-        #vector_i = (self.last_positions[robot_id].pose.pose.position.x - self.last_positions[i].pose.pose.position.x, self.last_positions[robot_id].pose.pose.position.y - self.last_positions[i].pose.pose.position.y)
-        # vectors.append(vector_i)
-        #distance_i = linalg.norm([self.last_positions[i].pose.pose.position.x - self.last_positions[robot_id].pose.pose.position.x, self.last_positions[i].pose.pose.position.y - self.last_positions[robot_id].pose.pose.position.y])
-        # distances.append(distance_i)
-        #force_vector = [0,0]
-        # for i in range(len(neighbours)):
-        # force_vector[0]+=(np.sum(distances)/distances[i])*vectors[i][0]
-        # force_vector[1]+=(np.sum(distances)/distances[i])*vectors[i][1]
-        #angle = np.arctan2(force_vector[1], force_vector[0])
+
         return poz_s
 
     def alignment(self, robot_id, neighbours):
