@@ -73,7 +73,7 @@ class Simulation():
         odom_i = self.last_positions[robot_id]
         move = Twist()
         # check if the boid is near the wall
-        if self.wall_check(msg.pose.pose.position):
+        if self.wall_check(msg.pose.pose.position, msg.pose.pose.orientation):
             move = self.avoid_the_wall(odom_i, robot_id)
 
         elif len(neoighbors_id) > 0:  # check if there is nearby boids to apply Reynolds rules
@@ -97,8 +97,9 @@ class Simulation():
             move.angular.z = 0
         self.pub[robot_id].publish(move)
 
-    def wall_check(self, pose) -> bool:
+    def wall_check(self, pose, orient) -> bool:
         "Returns True if the boid is close to the wall"
+        _, _, z = quaternion_to_euler(orient.w, orient.x, orient.y, orient.z)
 
         agent_column = int((pose.x - self.map_origin.x) / self.map_resolution)
         agent_row = int((self.map_origin.y + len(self.map) *
@@ -123,11 +124,13 @@ class Simulation():
                     y = self.map_origin.y + (rows - row) * self.map_resolution
                     alpha = np.arctan(y/x)
 
-                    ## TODO
-                    ## Provjera da li je alpha izmedu z + (fov/2) i z - (fov/2) cisto da znamo da je "isprid"
-                    ## nas ta prepreka            
-
-                    return True
+                         
+                    if alpha < z + (self.fov/2) and alpha > z - (self.fov/2):
+                        print(f"Wall is at: ({x}, {y}, {alpha})")
+                        print(f"While the robot is at ({pose.x}, {pose.y}, {z})")
+                        return True
+                        ### Tu mozes vracati x, y, alpha, to su ti lokacije zida i kut izmedu
+                        ### robota i zida
         return False
 
 
